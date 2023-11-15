@@ -1,0 +1,445 @@
+//*****************************************************************************
+// Universidad del Valle de Guatemala
+// BE3015 - Electrónica Digital 2
+// Jose Luis Monterroso - 20142
+// Proyecto 3 / Sensor I2C
+//*****************************************************************************
+
+//*****************************************************************************
+// Librerías
+//*****************************************************************************
+#include <Arduino.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <TM4C123GH6PM.h>
+#include <SPI.h>
+#include <SD.h>
+#include "inc/hw_ints.h"
+#include "inc/hw_memmap.h"
+#include "inc/hw_types.h"
+#include "driverlib/debug.h"
+#include "driverlib/gpio.h"
+#include "driverlib/interrupt.h"
+#include "driverlib/rom_map.h"
+#include "driverlib/rom.h"
+#include "driverlib/sysctl.h"
+#include "driverlib/timer.h"
+
+#include "bitmaps.h"
+#include "font.h"
+#include "lcd_registers.h"
+
+//*****************************************************************************
+// Definición de pines
+//*****************************************************************************
+const int boton = PUSH1;  // Pin del botón
+const int boton2 = PUSH2;
+const int buzz = PB_2;
+const int uartSpeed = 115200;
+const int chipSelect = PB_3;
+// Configuración de pines para el LCD
+#define LCD_RST PD_0
+#define LCD_DC PD_1
+#define LCD_CS PA_3
+#define ILI9341_INVOFF 0x20
+#define ILI9341_SLPOUT 0x11
+#define ILI9341_DISPON 0x29
+
+//*****************************************************************************
+// Prototipos de función
+//*****************************************************************************
+void UART1_Handler(void);
+void LCD_Init(void);
+void LCD_CMD(uint8_t cmd);
+void LCD_DATA(uint8_t data);
+void SetWindows(unsigned int x1, unsigned int y1, unsigned int x2, unsigned int y2);
+void LCD_Clear(unsigned int c);
+void H_line(unsigned int x, unsigned int y, unsigned int l, unsigned int c);
+void V_line(unsigned int x, unsigned int y, unsigned int l, unsigned int c);
+void Rect(unsigned int x, unsigned int y, unsigned int w, unsigned int h, unsigned int c);
+void FillRect(unsigned int x, unsigned int y, unsigned int w, unsigned int h, unsigned int c);
+void LCD_Print(String text, int x, int y, int fontSize, int color, int background);
+
+void LCD_Bitmap(unsigned int x, unsigned int y, unsigned int width, unsigned int height, unsigned char bitmap[]);
+void LCD_Sprite(int x, int y, int width, int height, unsigned char bitmap[],int columns, int index, char flip, char offset);
+
+void tempo(float temperature);
+void saveData(float data);
+
+extern uint8_t cold[];
+//*****************************************************************************
+// Variables Globales
+//*****************************************************************************
+
+bool newTemperature = false;
+float temperature = 0.0;
+const int maxTempStringLength = 10;
+char temperatureString[maxTempStringLength];
+unsigned char temperatureBitmap[41 * 124 * 2];
+const int temperatureBitmapWidth = 41;
+const int temperatureBitmapHeight = 124;
+bool buttonPressed = false;
+bool button2Pressed = false;
+//*****************************************************************************
+// Funciones Principales
+//*****************************************************************************
+void setup() {
+  SysCtlClockSet(SYSCTL_SYSDIV_2_5 | SYSCTL_USE_PLL | SYSCTL_OSC_MAIN | SYSCTL_XTAL_16MHZ);
+  // Inicialización de Serial2 para la comunicación con el ESP32 (asegúrate de que esté configurado correctamente)
+  Serial.begin(115200);
+  Serial2.begin(uartSpeed);
+  SPI.setModule(0);
+
+  // Inicializa la pantalla TFT
+  LCD_Init();
+  LCD_Clear(0x00);
+  pinMode(boton, INPUT_PULLUP);
+  pinMode(boton2,INPUT_PULLUP);
+  pinMode(buzz,OUTPUT);
+
+  if (!SD.begin(chipSelect)) {
+    Serial.println("Error al inicializar la tarjeta SD");
+    return;
+  }
+}
+
+void loop() {
+  if (digitalRead(boton2) == LOW) {
+    if (!button2Pressed) {
+      // Envía la solicitud al ESP32 solo una vez cuando se presiona el botón PUSH2
+      Serial2.println("S");
+      button2Pressed = true;
+
+      // Almacena los datos en la tarjeta SD
+      saveData(temperature);
+
+    }
+  } else {
+    button2Pressed = false;
+  }
+
+  if (digitalRead(boton) == LOW) {
+    // Verifica si el botón PUSH1 se ha presionado
+    if (!buttonPressed) {
+      // Envía la solicitud al ESP32 solo una vez cuando se presiona el botón PUSH1
+      Serial2.println("S");
+      buttonPressed = true;
+
+      // Lee la temperatura enviada por el ESP32
+     if (Serial2.available()) {
+      temperature = Serial2.parseFloat();
+
+      // Muestra la temperatura en la Tiva C
+      Serial.print("Temperatura recibida: ");
+      Serial.println(temperature);
+
+      // Llama a la función para mostrar la temperatura en la pantalla
+      tempo(temperature);
+
+      }
+    }
+  } else {
+    // Restablece la bandera de botón cuando se libera
+    buttonPressed = false;
+  }
+}
+
+
+//*****************************************************************************
+// Funciones Secundarias
+//*****************************************************************************
+
+void tempo(float temperature) {
+  if (temperature < 20) {
+    LCD_Clear(0x00FF00);
+    String text1 = "Temperatura Baja";
+    LCD_Print(text1, 25, 50, 2, 0xffff, 0x421b);
+    String text4 = "Temp: " + String(temperature, 2) + "C";  // Utiliza el símbolo de grado ASCII
+    LCD_Print(text4, 25, 80, 2, 0xffff, 0x421b);
+
+    
+    /*for (int x = 0; x < 300; x++) {
+      int anime = (x / 8) % 4;
+      LCD_Sprite(100, 100, 19, 19, cold, 4, anime, 0, 1);
+      if (digitalRead(boton2) == LOW) {
+        break;
+      }
+      if (digitalRead(boton) == LOW) {
+        break;
+      }
+    }
+    */
+  }
+  if (temperature >= 20 && temperature <= 38) {
+    LCD_Clear(0xFFA500);
+    String text2 = "Temperatura Media";
+    LCD_Print(text2, 25, 50, 2, 0xffff, 0x421b);
+    String text5 = "Temp: " + String(temperature, 2) + "C";
+    LCD_Print(text5, 25, 80, 2, 0xffff, 0x421b);
+
+    
+    /*for (int x = 0; x < 300; x++) {
+      int anime = (x / 8) % 4;
+      LCD_Sprite(100, 100, 19, 19, cold, 4, anime, 0, 1);
+      if (digitalRead(boton2) == LOW) {
+        break;
+      }
+      if (digitalRead(boton) == LOW) {
+        break;
+      }
+    }
+    */
+  }
+  if (temperature > 38) {
+    LCD_Clear(0xFF0000);
+    String text3 = "Temperatura Alta";
+    LCD_Print(text3, 25, 50, 2, 0xffff, 0x421b);
+    String text6 = "Temp: " + String(temperature, 2) + "C";
+    LCD_Print(text6, 25, 80, 2, 0xffff, 0x421b);
+
+    
+    /*for (int x = 0; x < 300; x++) {
+      int anime = (x / 8) % 4;
+      LCD_Sprite(100, 100, 19, 19, cold, 4, anime, 0, 1);
+      if (digitalRead(boton2) == LOW) {
+        break;
+      }
+      if (digitalRead(boton) == LOW) {
+        break;
+      }
+    }
+    */
+  }
+}
+
+void saveData(float data) {
+  File dataFile = SD.open("data.txt", FILE_WRITE); // Abre o crea un archivo llamado "data.txt"
+
+  if (dataFile) {
+    dataFile.println(data); // Escribe los datos en el archivo
+    dataFile.close(); // Cierra el archivo
+    Serial.println("Datos guardados en la tarjeta SD");
+  } else {
+    Serial.println("Error al abrir el archivo en la tarjeta SD");
+  }
+}
+
+//Funcion para inicializar la pantalla
+void LCD_Init(void) {
+  pinMode(LCD_RST, OUTPUT);
+  pinMode(LCD_CS, OUTPUT);
+  pinMode(LCD_DC, OUTPUT);
+  //****************************************
+  // Secuencia de Inicialización
+  //****************************************
+  digitalWrite(LCD_CS, HIGH);
+  digitalWrite(LCD_DC, HIGH);
+  digitalWrite(LCD_RST, HIGH);
+  delay(5);
+  digitalWrite(LCD_RST, LOW);
+  delay(20);
+  digitalWrite(LCD_RST, HIGH);
+  delay(150);
+  digitalWrite(LCD_CS, LOW);
+  //****************************************
+  LCD_CMD(0xE9);  // SETPANELRELATED
+  LCD_DATA(0x20);
+  //****************************************
+  LCD_CMD(0x11); // Exit Sleep SLEEP OUT (SLPOUT)
+  delay(100);
+  //****************************************
+  LCD_CMD(0xD1);    // (SETVCOM)
+  LCD_DATA(0x00);
+  LCD_DATA(0x71);
+  LCD_DATA(0x19);
+  //****************************************
+  LCD_CMD(0xD0);   // (SETPOWER)
+  LCD_DATA(0x07);
+  LCD_DATA(0x01);
+  LCD_DATA(0x08);
+  //****************************************
+  LCD_CMD(0x36);  // (MEMORYACCESS)
+  LCD_DATA(0x40 | 0x80 | 0x20 | 0x08); // LCD_DATA(0x19);
+  //****************************************
+  LCD_CMD(0x3A); // Set_pixel_format (PIXELFORMAT)
+  LCD_DATA(0x05); // color setings, 05h - 16bit pixel, 11h - 3bit pixel
+  //****************************************
+  LCD_CMD(0xC1);    // (POWERCONTROL2)
+  LCD_DATA(0x10);
+  LCD_DATA(0x10);
+  LCD_DATA(0x02);
+  LCD_DATA(0x02);
+  //****************************************
+  LCD_CMD(0xC0); // Set Default Gamma (POWERCONTROL1)
+  LCD_DATA(0x00);
+  LCD_DATA(0x35);
+  LCD_DATA(0x00);
+  LCD_DATA(0x00);
+  LCD_DATA(0x01);
+  LCD_DATA(0x02);
+  //****************************************
+  LCD_CMD(0xC5); // Set Frame Rate (VCOMCONTROL1)
+  LCD_DATA(0x04); // 72Hz
+  //****************************************
+  LCD_CMD(0xD2); // Power Settings  (SETPWRNORMAL)
+  LCD_DATA(0x01);
+  LCD_DATA(0x44);
+  //****************************************
+  LCD_CMD(0xC8); //Set Gamma  (GAMMASET)
+  LCD_DATA(0x04);
+  LCD_DATA(0x67);
+  LCD_DATA(0x35);
+  LCD_DATA(0x04);
+  LCD_DATA(0x08);
+  LCD_DATA(0x06);
+  LCD_DATA(0x24);
+  LCD_DATA(0x01);
+  LCD_DATA(0x37);
+  LCD_DATA(0x40);
+  LCD_DATA(0x03);
+  LCD_DATA(0x10);
+  LCD_DATA(0x08);
+  LCD_DATA(0x80);
+  LCD_DATA(0x00);
+  //****************************************
+  LCD_CMD(0x2A); // Set_column_address 320px (CASET)
+  LCD_DATA(0x00);
+  LCD_DATA(0x00);
+  LCD_DATA(0x01);
+  LCD_DATA(0x3F);
+  //****************************************
+  LCD_CMD(0x2B); // Set_page_address 480px (PASET)
+  LCD_DATA(0x00);
+  LCD_DATA(0x00);
+  LCD_DATA(0x01);
+  LCD_DATA(0xE0);
+  LCD_CMD(0x29); //display on
+  LCD_CMD(0x2C); //display on
+
+  LCD_CMD(ILI9341_INVOFF); //Invert Off
+  delay(120);
+  LCD_CMD(ILI9341_SLPOUT);    //Exit Sleep
+  delay(120);
+  LCD_CMD(ILI9341_DISPON);    //Display on
+  digitalWrite(LCD_CS, HIGH);
+}
+
+// Función para borrar la pantalla - parámetros (color)
+//***************************************************************************************************************************************
+void LCD_Clear(unsigned int c) {
+  unsigned int x, y;
+  LCD_CMD(0x02c); // write_memory_start
+  digitalWrite(LCD_DC, HIGH);
+  digitalWrite(LCD_CS, LOW);
+  SetWindows(0, 0, 319, 239); // 479, 319);
+  for (x = 0; x < 320; x++)
+    for (y = 0; y < 240; y++) {
+      LCD_DATA(c >> 8);
+      LCD_DATA(c);
+    }
+  digitalWrite(LCD_CS, HIGH);
+}
+
+// Función para enviar comandos a la LCD - parámetro (comando)
+//***************************************************************************************************************************************
+void LCD_CMD(uint8_t cmd) {
+  digitalWrite(LCD_DC, LOW);
+  SPI.transfer(cmd);
+}
+
+void LCD_DATA(uint8_t data) {
+  digitalWrite(LCD_DC, HIGH);
+  SPI.transfer(data);
+}
+
+// Función para definir rango de direcciones de memoria con las cuales se trabajara (se define una ventana)
+//***************************************************************************************************************************************
+void SetWindows(unsigned int x1, unsigned int y1, unsigned int x2, unsigned int y2) {
+  LCD_CMD(0x2a); // Set_column_address 4 parameters
+  LCD_DATA(x1 >> 8);
+  LCD_DATA(x1);
+  LCD_DATA(x2 >> 8);
+  LCD_DATA(x2);
+  LCD_CMD(0x2b); // Set_page_address 4 parameters
+  LCD_DATA(y1 >> 8);
+  LCD_DATA(y1);
+  LCD_DATA(y2 >> 8);
+  LCD_DATA(y2);
+  LCD_CMD(0x2c); // Write_memory_start
+}
+
+// Función para dibujar una imagen a partir de un arreglo de colores (Bitmap) Formato (Color 16bit R 5bits G 6bits B 5bits)
+//***************************************************************************************************************************************
+void LCD_Bitmap(unsigned int x, unsigned int y, unsigned int width, unsigned int height, unsigned char bitmap[]) {
+  LCD_CMD(0x02c); // write_memory_start
+  digitalWrite(LCD_DC, HIGH);
+  digitalWrite(LCD_CS, LOW);
+
+  unsigned int x2, y2;
+  x2 = x + width;
+  y2 = y + height;
+  SetWindows(x, y, x2 - 1, y2 - 1);
+  unsigned int k = 0;
+  unsigned int i, j;
+
+  for (int i = 0; i < width; i++) {
+    for (int j = 0; j < height; j++) {
+      LCD_DATA(bitmap[k]);
+      LCD_DATA(bitmap[k + 1]);
+      //LCD_DATA(bitmap[k]);
+      k = k + 2;
+    }
+  }
+  digitalWrite(LCD_CS, HIGH);
+}
+
+// Función para dibujar texto - parámetros ( texto, coordenada x, cordenada y, color, background)
+//***************************************************************************************************************************************
+void LCD_Print(String text, int x, int y, int fontSize, int color, int background) {
+  int fontXSize ;
+  int fontYSize ;
+
+  if (fontSize == 1) {
+    fontXSize = fontXSizeSmal ;
+    fontYSize = fontYSizeSmal ;
+  }
+  if (fontSize == 2) {
+    fontXSize = fontXSizeBig ;
+    fontYSize = fontYSizeBig ;
+  }
+
+  char charInput ;
+  int cLength = text.length();
+  //Serial.println(cLength, DEC);
+  int charDec ;
+  int c ;
+  int charHex ;
+  char char_array[cLength + 1];
+  text.toCharArray(char_array, cLength + 1) ;
+  for (int i = 0; i < cLength ; i++) {
+    charInput = char_array[i];
+    //Serial.println(char_array[i]);
+    charDec = int(charInput);
+    digitalWrite(LCD_CS, LOW);
+    SetWindows(x + (i * fontXSize), y, x + (i * fontXSize) + fontXSize - 1, y + fontYSize );
+    long charHex1 ;
+    for ( int n = 0 ; n < fontYSize ; n++ ) {
+      if (fontSize == 1) {
+        charHex1 = pgm_read_word_near(smallFont + ((charDec - 32) * fontYSize) + n);
+      }
+      if (fontSize == 2) {
+        charHex1 = pgm_read_word_near(bigFont + ((charDec - 32) * fontYSize) + n);
+      }
+      for (int t = 1; t < fontXSize + 1 ; t++) {
+        if (( charHex1 & (1 << (fontXSize - t))) > 0 ) {
+          c = color ;
+        } else {
+          c = background ;
+        }
+        LCD_DATA(c >> 8);
+        LCD_DATA(c);
+      }
+    }
+    digitalWrite(LCD_CS, HIGH);
+  }
+}
