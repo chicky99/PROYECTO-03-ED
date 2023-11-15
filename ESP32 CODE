@@ -1,0 +1,88 @@
+//*****************************************************************************
+// Universidad del Valle de Guatemala
+// BE3015 - Electrónica Digital 2
+// Jose Luis Monterroso - 20142
+// Proyecto 3 / Sensor I2C
+//*****************************************************************************
+//*****************************************************************************
+// Librerías
+//*****************************************************************************
+#include <Wire.h>
+#include <Temperature_LM75_Derived.h>
+#include <Adafruit_NeoPixel.h>
+
+//*****************************************************************************
+// Definición de pines
+//*****************************************************************************
+#define LED_PIN    23    // Pin al que está conectado el Neopixel
+#define NUMPIXELS  16   // Número de neopixeles
+
+//*****************************************************************************
+// Prototipos de función
+//*****************************************************************************
+void stemp();
+void updateNeoPixelColor(uint32_t color);
+
+//*****************************************************************************
+// Variables Globales
+//*****************************************************************************
+Generic_LM75 temperature;
+
+Adafruit_NeoPixel pixels = Adafruit_NeoPixel(NUMPIXELS, LED_PIN, NEO_GRB + NEO_KHZ800);
+
+//*****************************************************************************
+// ISR-Interrupciones
+//*****************************************************************************
+
+//*****************************************************************************
+// Funciones Principales
+//*****************************************************************************
+void setup(){
+  Serial.begin(115200);
+  Serial2.begin(115200);
+  Wire.begin();
+  pixels.begin();  // Inicializar el objeto NeoPixel
+  updateNeoPixelColor(0);  // Apagar el NeoPixel al inicio
+}
+
+void loop(){
+  stemp();
+  delay(500);
+}
+
+//*****************************************************************************
+// Funciones Secundarias
+//*****************************************************************************
+
+void stemp() {
+  if (Serial2.available() > 0) {
+    char request = Serial2.read();
+    if (request == 'S') {
+      // Cambiar el color del NeoPixel para indicar que se está midiendo
+      updateNeoPixelColor(pixels.Color(0, 255, 0));  // Verde
+
+      // Realizar lectura del sensor LM75
+      float celsius = temperature.readTemperatureC();
+
+      // Enviar la temperatura a la Tiva C
+      Serial2.println(celsius);
+
+      // Enviar la temperatura a la computadora
+      Serial.print("Temp:");
+      Serial.println(celsius);
+
+      delay(2000);
+
+      // Cambiar el color del NeoPixel para indicar que ha terminado de medir
+      updateNeoPixelColor(pixels.Color(0, 0, 255));  // Azul
+    }
+  }
+}
+
+// Función para actualizar el color del NeoPixel
+void updateNeoPixelColor(uint32_t color) {
+  for (int i = 0; i < NUMPIXELS; i++) {
+    pixels.setPixelColor(i, color);  // Establecer el nuevo color para cada píxel
+  }
+  pixels.show();  // Mostrar el color en todos los píxeles
+}
